@@ -3,6 +3,7 @@
 import pandas as pd
 from tqdm import tqdm
 
+
 def preprocess_regional_file(file_path):
     """Generate pivot sheets inside Regional.xlsx before importing."""
     print(f"Preprocessing {file_path} ...")
@@ -17,7 +18,7 @@ def preprocess_regional_file(file_path):
 
         if 'PROJECT ID' in df.columns:
             df['PROJECT ID'] = df['PROJECT ID'].apply(clean_project_id)
-        
+
         df['UTILIZATION END DT'] = pd.to_datetime(df['UTILIZATION END DT'], errors='coerce')
         unique_dates = sorted(df['UTILIZATION END DT'].dropna().unique())
 
@@ -26,7 +27,7 @@ def preprocess_regional_file(file_path):
                 filtered_df = df[df['UTILIZATION END DT'] == date_val]
                 pivot = pd.pivot_table(
                     filtered_df,
-                    index=['EMPLID','CURRENT WORK LOCATION','PROJECT ID', 'PROJECT DESCRIPTION', 
+                    index=['EMPLID', 'CURRENT WORK LOCATION', 'PROJECT ID', 'PROJECT DESCRIPTION',
                            'PROJECT TYPE', 'CONTRACT TYPE', 'CUST NAME', 'RUS STATUS'],
                     values='TOTAL HOURS', aggfunc='sum', fill_value=0
                 ).reset_index()

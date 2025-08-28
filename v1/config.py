@@ -4,7 +4,6 @@
 DB_HOST = "localhost"
 DB_USER = "root"
 DB_PASSWORD = "root"
-COMMON_DB_NAME = "project_common_data"
 
 # --- TABLE NAMES ---
 REGIONAL_TABLE = "employee_regional_details"

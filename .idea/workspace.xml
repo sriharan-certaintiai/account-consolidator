@@ -4,10 +4,15 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a3201cbd-5b7a-422c-bb9b-f2722e85195b" name="Changes" comment="Init">
-      <change afterPath="$PROJECT_DIR$/config.py" afterDir="false" />
+    <list default="true" id="a3201cbd-5b7a-422c-bb9b-f2722e85195b" name="Changes" comment="git-ignore update">
+      <change afterPath="$PROJECT_DIR$/v1/main.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/v1/config.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/db_operations.py" beforeDir="false" afterPath="$PROJECT_DIR$/v1/db_operations.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/file_preprocessor.py" beforeDir="false" afterPath="$PROJECT_DIR$/v1/file_preprocessor.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/validator.py" beforeDir="false" afterPath="$PROJECT_DIR$/v1/validator.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -52,6 +57,7 @@
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
     "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.main.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
     "RunOnceActivity.git.unshallow": "true",
@@ -82,7 +88,7 @@
       <option name="presentableId" value="Default" />
       <updated>1756366631804</updated>
       <workItem from="1756366633082" duration="423000" />
-      <workItem from="1756367072732" duration="794000" />
+      <workItem from="1756367072732" duration="3787000" />
     </task>
     <task id="LOCAL-00001" summary="Init">
       <option name="closed" value="true" />
@@ -100,7 +106,23 @@
       <option name="project" value="LOCAL" />
       <updated>1756367135622</updated>
     </task>
-    <option name="localTasksCounter" value="3" />
+    <task id="LOCAL-00003" summary="config update">
+      <option name="closed" value="true" />
+      <created>1756370925400</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1756370925400</updated>
+    </task>
+    <task id="LOCAL-00004" summary="git-ignore update">
+      <option name="closed" value="true" />
+      <created>1756370999497</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1756370999497</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -108,6 +130,11 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Init" />
-    <option name="LAST_COMMIT_MESSAGE" value="Init" />
+    <MESSAGE value="config update" />
+    <MESSAGE value="git-ignore update" />
+    <option name="LAST_COMMIT_MESSAGE" value="git-ignore update" />
+  </component>
+  <component name="com.intellij.coverage.CoverageDataManagerImpl">
+    <SUITE FILE_PATH="coverage/automation$main.coverage" NAME="main Coverage Results" MODIFIED="1756373502034" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>
