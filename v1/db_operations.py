@@ -1,5 +1,6 @@
 # db_operations.py
 
+import os
 import re
 import pandas as pd
 import mysql.connector
@@ -8,6 +9,7 @@ from datetime import datetime
 import calendar
 import config
 from tqdm import tqdm
+import openpyxl
 
 
 def create_connection(host_name, user_name, user_password, db_name=None):
@@ -31,9 +33,7 @@ def create_database(connection, db_name):
         print(f"Error creating database {db_name}: {e}")
 
 
-# --- CHANGE: Function to create only the PMR table ---
 def create_pmr_table(connection):
-    """Creates the PMR table in the global PMR database."""
     cursor = connection.cursor()
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS {config.PMR_TABLE} (
@@ -45,11 +45,8 @@ def create_pmr_table(connection):
     print(f"Table '{config.PMR_TABLE}' is ready in the global PMR database.")
 
 
-# --- CHANGE: Renamed function to reflect its purpose ---
 def create_account_tables(connection):
-    """Creates the tables specific to an account database."""
     cursor = connection.cursor()
-
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS {config.REGIONAL_TABLE} (
             id INT AUTO_INCREMENT PRIMARY KEY, fiscal_year VARCHAR(10),
@@ -82,11 +79,88 @@ def create_account_tables(connection):
     print("All account-specific tables are ready.")
 
 
-# --- CHANGE: Logic updated to IGNORE duplicates and not TRUNCATE ---
+def create_abd_table(connection):
+    """Creates the associate base data table in its own database."""
+    cursor = connection.cursor()
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS {config.ABD_TABLE_NAME} (
+            EMPLID VARCHAR(255) PRIMARY KEY,
+            `Function` VARCHAR(255),
+            Designation VARCHAR(255),
+            BAND VARCHAR(255)
+        );
+    """)
+    print(f"Table '{config.ABD_TABLE_NAME}' is ready in the global ABD database.")
+
+
+def import_abd_data(connection, abd_folder_path):
+    """
+    Finds all ABD files, reads them row-by-row with a progress bar,
+    and loads the unique, latest records into the database.
+    """
+    cursor = connection.cursor()
+    all_records = []
+
+    abd_files = [f for f in os.listdir(abd_folder_path) if f.endswith(('.xlsx', '.xls'))]
+    total_files = len(abd_files)
+    print(f"Found {total_files} files in the ABD folder.")
+
+    # --- STAGE 1: Reading all data from files ---
+    print("\n--- Stage 1 of 3: Reading all rows from source files ---")
+    for i, file_name in enumerate(abd_files, 1):
+        print(f"[{i}/{total_files}] Processing file: {file_name}")
+        file_path = os.path.join(abd_folder_path, file_name)
+        try:
+            workbook = openpyxl.load_workbook(file_path, read_only=True)
+            target_sheet_obj = None
+            for sheet_name in workbook.sheetnames:
+                if 'base' in sheet_name.lower():
+                    target_sheet_obj = workbook[sheet_name]
+                    break
+
+            if target_sheet_obj:
+                header = [cell.value for cell in target_sheet_obj[1]]
+                header_upper = [str(h).strip().upper() for h in header]
+                col_map = {db_col: header_upper.index(excel_col) for excel_col, db_col in config.ABD_COLUMN_MAP.items()
+                           if excel_col in header_upper}
+
+                if 'EMPLID' in col_map:
+                    row_iterator = target_sheet_obj.iter_rows(min_row=2, values_only=True)
+                    for row in tqdm(row_iterator, total=target_sheet_obj.max_row - 1, desc=f"  -> Loading rows",
+                                    unit="row"):
+                        record = {db_col: row[excel_idx] for db_col, excel_idx in col_map.items()}
+                        record['EMPLID'] = str(record.get('EMPLID'))
+                        all_records.append(record)
+        except Exception as e:
+            print(f"\nWarning: Could not process file {file_name}. Error: {e}")
+
+    if not all_records:
+        print("No valid ABD data found to process.")
+        return
+
+    # --- STAGE 2: Processing records in memory ---
+    print("\n\n--- Stage 2 of 3: Processing and removing duplicates ---")
+    combined_df = pd.DataFrame(all_records)
+    combined_df.dropna(subset=['EMPLID'], inplace=True)
+    final_df = combined_df.drop_duplicates(subset=['EMPLID'], keep='last')
+    print(f"Processing complete. Found {len(final_df)} unique records to load.")
+
+    # --- STAGE 3: Loading final data into the database ---
+    print("\n--- Stage 3 of 3: Loading unique records into the database ---")
+    cursor.execute(f"TRUNCATE TABLE {config.ABD_TABLE_NAME}")
+
+    for _, row in tqdm(final_df.iterrows(), total=len(final_df), desc="Loading final ABD data"):
+        sql = "INSERT INTO {} (EMPLID, `Function`, Designation, BAND) VALUES (%s, %s, %s, %s)".format(
+            config.ABD_TABLE_NAME)
+        values = (row.get('EMPLID'), row.get('Function'), row.get('Designation'), row.get('BAND'))
+        cursor.execute(sql, values)
+
+    connection.commit()
+    print(f"✅ {len(final_df)} unique associate records loaded into global ABD database.")
+
+
 def import_pmr_data(connection, pmr_files):
     cursor = connection.cursor()
-    # cursor.execute(f"TRUNCATE TABLE {config.PMR_TABLE}") # <-- REMOVED to make data persistent
-
     pmr_df_list = [pd.read_excel(file) for file in pmr_files]
     df_all_pmr = pd.concat(pmr_df_list, ignore_index=True)
     df_all_pmr.columns = df_all_pmr.columns.str.strip().str.upper()
@@ -98,11 +172,7 @@ def import_pmr_data(connection, pmr_files):
         if final_project_id:
             manager_name = str(row.get('PROGRAM MANAGER NAME', '')).strip()
             manager_email = str(row.get('PROGRAM MANAGER EMAIL ID', '')).strip()
-            # --- CHANGE: Use INSERT IGNORE to skip existing Project IDs ---
-            sql = f"""
-                INSERT IGNORE INTO {config.PMR_TABLE} (PROJECT_ID, PGM_MANAGER_NAME, PGM_MANAGER_EMAIL)
-                VALUES (%s, %s, %s)
-            """
+            sql = f"INSERT IGNORE INTO {config.PMR_TABLE} (PROJECT_ID, PGM_MANAGER_NAME, PGM_MANAGER_EMAIL) VALUES (%s, %s, %s)"
             cursor.execute(sql, (final_project_id, manager_name, manager_email))
 
     connection.commit()
@@ -161,7 +231,6 @@ def import_salary_data(connection, excel_path, fiscal_year):
     print(f"Salary data for {fiscal_year} loaded into {config.SALARY_TABLE}")
 
 
-# --- CHANGE: JOIN now points to the global PMR database ---
 def consolidate_data(connection, log_file, fiscal_year):
     cursor = connection.cursor()
     cursor.execute(f"DELETE FROM {config.CONSOLIDATION_TABLE} WHERE fiscal_year = %s", (fiscal_year,))
@@ -201,88 +270,3 @@ def consolidate_data(connection, log_file, fiscal_year):
         if missing_projects:
             log.write("\n".join(sorted(missing_projects)))
     print(f"Missing projects for {fiscal_year} logged in {log_file}.")
-
-
-def create_abd_table(connection):
-    """Creates the associate base data table in its own database."""
-    cursor = connection.cursor()
-    cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS {config.ABD_TABLE_NAME} (
-            EMPLID VARCHAR(255) PRIMARY KEY,
-            `Function` VARCHAR(255),
-            Designation VARCHAR(255),
-            BAND VARCHAR(255)
-        );
-    """)
-    print(f"Table '{config.ABD_TABLE_NAME}' is ready in the global ABD database.")
-
-
-# --- NEW FUNCTION to import and process ABD data ---
-def import_abd_data(connection, abd_folder_path):
-    """
-    Finds all ABD files, extracts data from 'Base' sheets, processes it,
-    and loads the unique, latest records into the database.
-    """
-    cursor = connection.cursor()
-    all_dfs = []
-
-    abd_files = [f for f in os.listdir(abd_folder_path) if f.endswith(('.xlsx', '.xls'))]
-    print(f"Found {len(abd_files)} files in the ABD folder.")
-
-    for file_name in tqdm(abd_files, desc="Processing ABD files"):
-        file_path = os.path.join(abd_folder_path, file_name)
-        try:
-            xls = pd.ExcelFile(file_path)
-            target_sheet = None
-            for sheet_name in xls.sheet_names:
-                if 'base' in sheet_name.lower():
-                    target_sheet = sheet_name
-                    break
-
-            if target_sheet:
-                df = pd.read_excel(xls, sheet_name=target_sheet)
-                df.columns = [str(col).strip().upper() for col in df.columns]
-
-                # Filter for only the columns we need
-                required_cols = list(config.ABD_COLUMN_MAP.keys())
-                existing_cols = [col for col in required_cols if col in df.columns]
-
-                if 'EMPLID' in existing_cols:
-                    df_filtered = df[existing_cols]
-                    # Rename columns to match DB schema
-                    df_renamed = df_filtered.rename(columns=config.ABD_COLUMN_MAP)
-                    all_dfs.append(df_renamed)
-
-        except Exception as e:
-            print(f"Warning: Could not process file {file_name}. Error: {e}")
-
-    if not all_dfs:
-        print("No valid ABD data found to process.")
-        return
-
-    # Combine all data and handle duplicates
-    combined_df = pd.concat(all_dfs, ignore_index=True)
-    combined_df.dropna(subset=['EMPLID'], inplace=True)  # Ensure EMPLID is not null
-    combined_df['EMPLID'] = combined_df['EMPLID'].astype(str)
-
-    # Keep the last entry for each EMPLID, ensuring we have the latest data
-    final_df = combined_df.drop_duplicates(subset=['EMPLID'], keep='last')
-
-    # Load data into the database
-    cursor.execute(f"TRUNCATE TABLE {config.ABD_TABLE_NAME}")
-
-    for _, row in tqdm(final_df.iterrows(), total=len(final_df), desc="Loading ABD data      "):
-        sql = f"""
-            INSERT INTO {config.ABD_TABLE_NAME} (EMPLID, `Function`, Designation, BAND)
-            VALUES (%s, %s, %s, %s)
-        """
-        values = (
-            row.get('EMPLID'),
-            row.get('Function'),
-            row.get('Designation'),
-            row.get('BAND')
-        )
-        cursor.execute(sql, values)
-
-    connection.commit()
-    print(f"✅ {len(final_df)} unique associate records loaded into global ABD database.")
