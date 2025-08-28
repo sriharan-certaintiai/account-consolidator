@@ -31,10 +31,10 @@ def create_database(connection, db_name):
         print(f"Error creating database {db_name}: {e}")
 
 
-def create_all_tables(connection):
-    """Creates all required tables, including PMR, in the account database."""
+# --- CHANGE: Function to create only the PMR table ---
+def create_pmr_table(connection):
+    """Creates the PMR table in the global PMR database."""
     cursor = connection.cursor()
-
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS {config.PMR_TABLE} (
             PROJECT_ID VARCHAR(255) PRIMARY KEY,
@@ -42,6 +42,13 @@ def create_all_tables(connection):
             PGM_MANAGER_EMAIL VARCHAR(255)
         );
     """)
+    print(f"Table '{config.PMR_TABLE}' is ready in the global PMR database.")
+
+
+# --- CHANGE: Renamed function to reflect its purpose ---
+def create_account_tables(connection):
+    """Creates the tables specific to an account database."""
+    cursor = connection.cursor()
 
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS {config.REGIONAL_TABLE} (
@@ -69,15 +76,16 @@ def create_all_tables(connection):
             PROJECT_DESCRIPTION TEXT, PROJECT_TYPE VARCHAR(255), 
             CONTRACT_TYPE VARCHAR(255), CUST_NAME VARCHAR(255),
             PGM_MANAGER_NAME VARCHAR(255), PGM_MANAGER_EMAIL VARCHAR(255),
-            UNIQUE KEY `unique_employee_month_project_year` (`EMPLID`,`Month`,`PROJECT_ID`,`fiscal_year`)
+            UNIQUE KEY `unique_employee_month_project_year` (`EMPLID`(100),`Month`,`PROJECT_ID`(100),`fiscal_year`)
         );
     """)
-    print("All tables are ready in the account database.")
+    print("All account-specific tables are ready.")
 
 
+# --- CHANGE: Logic updated to IGNORE duplicates and not TRUNCATE ---
 def import_pmr_data(connection, pmr_files):
     cursor = connection.cursor()
-    cursor.execute(f"TRUNCATE TABLE {config.PMR_TABLE}")
+    # cursor.execute(f"TRUNCATE TABLE {config.PMR_TABLE}") # <-- REMOVED to make data persistent
 
     pmr_df_list = [pd.read_excel(file) for file in pmr_files]
     df_all_pmr = pd.concat(pmr_df_list, ignore_index=True)
@@ -90,17 +98,15 @@ def import_pmr_data(connection, pmr_files):
         if final_project_id:
             manager_name = str(row.get('PROGRAM MANAGER NAME', '')).strip()
             manager_email = str(row.get('PROGRAM MANAGER EMAIL ID', '')).strip()
+            # --- CHANGE: Use INSERT IGNORE to skip existing Project IDs ---
             sql = f"""
-                INSERT INTO {config.PMR_TABLE} (PROJECT_ID, PGM_MANAGER_NAME, PGM_MANAGER_EMAIL)
+                INSERT IGNORE INTO {config.PMR_TABLE} (PROJECT_ID, PGM_MANAGER_NAME, PGM_MANAGER_EMAIL)
                 VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    PGM_MANAGER_NAME = VALUES(PGM_MANAGER_NAME),
-                    PGM_MANAGER_EMAIL = VALUES(PGM_MANAGER_EMAIL)
             """
             cursor.execute(sql, (final_project_id, manager_name, manager_email))
 
     connection.commit()
-    print("✅ PMR data loaded successfully.")
+    print("✅ PMR data loaded successfully (new entries added, existing entries ignored).")
 
 
 def import_regional_details(connection, excel_path, fiscal_year):
@@ -155,6 +161,7 @@ def import_salary_data(connection, excel_path, fiscal_year):
     print(f"Salary data for {fiscal_year} loaded into {config.SALARY_TABLE}")
 
 
+# --- CHANGE: JOIN now points to the global PMR database ---
 def consolidate_data(connection, log_file, fiscal_year):
     cursor = connection.cursor()
     cursor.execute(f"DELETE FROM {config.CONSOLIDATION_TABLE} WHERE fiscal_year = %s", (fiscal_year,))
@@ -172,7 +179,7 @@ def consolidate_data(connection, log_file, fiscal_year):
             pmr.PGM_MANAGER_NAME, pmr.PGM_MANAGER_EMAIL
         FROM {config.REGIONAL_TABLE} r
         LEFT JOIN {config.SALARY_TABLE} s ON r.EMPLID = s.EMPLID AND r.Month = s.Month
-        LEFT JOIN {config.PMR_TABLE} pmr ON r.PROJECT_ID = pmr.PROJECT_ID
+        LEFT JOIN {config.PMR_DB_NAME}.{config.PMR_TABLE} pmr ON r.PROJECT_ID = pmr.PROJECT_ID
         WHERE r.fiscal_year = %s
     """
     print(f"Consolidating data for {fiscal_year} via SQL join...")
@@ -183,7 +190,7 @@ def consolidate_data(connection, log_file, fiscal_year):
     missing_query = f"""
         SELECT DISTINCT r.PROJECT_ID
         FROM {config.REGIONAL_TABLE} r
-        LEFT JOIN {config.PMR_TABLE} pmr ON r.PROJECT_ID = pmr.PROJECT_ID
+        LEFT JOIN {config.PMR_DB_NAME}.{config.PMR_TABLE} pmr ON r.PROJECT_ID = pmr.PROJECT_ID
         WHERE r.fiscal_year = %s AND pmr.PROJECT_ID IS NULL 
         AND r.PROJECT_ID IS NOT NULL AND r.PROJECT_ID != ''
     """
@@ -194,3 +201,88 @@ def consolidate_data(connection, log_file, fiscal_year):
         if missing_projects:
             log.write("\n".join(sorted(missing_projects)))
     print(f"Missing projects for {fiscal_year} logged in {log_file}.")
+
+
+def create_abd_table(connection):
+    """Creates the associate base data table in its own database."""
+    cursor = connection.cursor()
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS {config.ABD_TABLE_NAME} (
+            EMPLID VARCHAR(255) PRIMARY KEY,
+            `Function` VARCHAR(255),
+            Designation VARCHAR(255),
+            BAND VARCHAR(255)
+        );
+    """)
+    print(f"Table '{config.ABD_TABLE_NAME}' is ready in the global ABD database.")
+
+
+# --- NEW FUNCTION to import and process ABD data ---
+def import_abd_data(connection, abd_folder_path):
+    """
+    Finds all ABD files, extracts data from 'Base' sheets, processes it,
+    and loads the unique, latest records into the database.
+    """
+    cursor = connection.cursor()
+    all_dfs = []
+
+    abd_files = [f for f in os.listdir(abd_folder_path) if f.endswith(('.xlsx', '.xls'))]
+    print(f"Found {len(abd_files)} files in the ABD folder.")
+
+    for file_name in tqdm(abd_files, desc="Processing ABD files"):
+        file_path = os.path.join(abd_folder_path, file_name)
+        try:
+            xls = pd.ExcelFile(file_path)
+            target_sheet = None
+            for sheet_name in xls.sheet_names:
+                if 'base' in sheet_name.lower():
+                    target_sheet = sheet_name
+                    break
+
+            if target_sheet:
+                df = pd.read_excel(xls, sheet_name=target_sheet)
+                df.columns = [str(col).strip().upper() for col in df.columns]
+
+                # Filter for only the columns we need
+                required_cols = list(config.ABD_COLUMN_MAP.keys())
+                existing_cols = [col for col in required_cols if col in df.columns]
+
+                if 'EMPLID' in existing_cols:
+                    df_filtered = df[existing_cols]
+                    # Rename columns to match DB schema
+                    df_renamed = df_filtered.rename(columns=config.ABD_COLUMN_MAP)
+                    all_dfs.append(df_renamed)
+
+        except Exception as e:
+            print(f"Warning: Could not process file {file_name}. Error: {e}")
+
+    if not all_dfs:
+        print("No valid ABD data found to process.")
+        return
+
+    # Combine all data and handle duplicates
+    combined_df = pd.concat(all_dfs, ignore_index=True)
+    combined_df.dropna(subset=['EMPLID'], inplace=True)  # Ensure EMPLID is not null
+    combined_df['EMPLID'] = combined_df['EMPLID'].astype(str)
+
+    # Keep the last entry for each EMPLID, ensuring we have the latest data
+    final_df = combined_df.drop_duplicates(subset=['EMPLID'], keep='last')
+
+    # Load data into the database
+    cursor.execute(f"TRUNCATE TABLE {config.ABD_TABLE_NAME}")
+
+    for _, row in tqdm(final_df.iterrows(), total=len(final_df), desc="Loading ABD data      "):
+        sql = f"""
+            INSERT INTO {config.ABD_TABLE_NAME} (EMPLID, `Function`, Designation, BAND)
+            VALUES (%s, %s, %s, %s)
+        """
+        values = (
+            row.get('EMPLID'),
+            row.get('Function'),
+            row.get('Designation'),
+            row.get('BAND')
+        )
+        cursor.execute(sql, values)
+
+    connection.commit()
+    print(f"✅ {len(final_df)} unique associate records loaded into global ABD database.")
