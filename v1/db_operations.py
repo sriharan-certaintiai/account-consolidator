@@ -60,8 +60,9 @@ def create_account_tables(connection):
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS {config.SALARY_TABLE} (
             id INT AUTO_INCREMENT PRIMARY KEY, fiscal_year VARCHAR(10),
-            EMPLID VARCHAR(255), MONTH DATE, GROSS_PAY DECIMAL(10, 2), 
-            DESIGNATION VARCHAR(255), BAND VARCHAR(255), `FUNCTION` VARCHAR(255)
+            EMPLID VARCHAR(255), 
+            MONTH DATE, 
+            GROSS_PAY DECIMAL(10, 2)
         );
     """)
     cursor.execute(f"""
@@ -80,14 +81,14 @@ def create_account_tables(connection):
 
 
 def create_abd_table(connection):
-    """Creates the associate base data table in its own database."""
     cursor = connection.cursor()
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS {config.ABD_TABLE_NAME} (
             EMPLID VARCHAR(255) PRIMARY KEY,
             `Function` VARCHAR(255),
             Designation VARCHAR(255),
-            BAND VARCHAR(255)
+            BAND VARCHAR(255),
+            PROGRAM_MANAGER_NAME VARCHAR(255)
         );
     """)
     print(f"Table '{config.ABD_TABLE_NAME}' is ready in the global ABD database.")
@@ -95,8 +96,7 @@ def create_abd_table(connection):
 
 def import_abd_data(connection, abd_folder_path):
     """
-    Finds all ABD files, reads them row-by-row with a progress bar,
-    and loads the unique, latest records into the database.
+    Imports ABD data with flexible rules for sheet and column matching.
     """
     cursor = connection.cursor()
     all_records = []
@@ -105,32 +105,61 @@ def import_abd_data(connection, abd_folder_path):
     total_files = len(abd_files)
     print(f"Found {total_files} files in the ABD folder.")
 
-    # --- STAGE 1: Reading all data from files ---
-    print("\n--- Stage 1 of 3: Reading all rows from source files ---")
     for i, file_name in enumerate(abd_files, 1):
-        print(f"[{i}/{total_files}] Processing file: {file_name}")
+        print(f"\n[{i}/{total_files}] Processing file: {file_name}")
         file_path = os.path.join(abd_folder_path, file_name)
         try:
             workbook = openpyxl.load_workbook(file_path, read_only=True)
+
+            if not workbook.sheetnames:
+                print(f"  -> ERROR: File '{file_name}' contains no sheets. Skipping.")
+                continue
+
             target_sheet_obj = None
-            for sheet_name in workbook.sheetnames:
-                if 'base' in sheet_name.lower():
-                    target_sheet_obj = workbook[sheet_name]
-                    break
+            clean_sheet_names = {s.strip().lower(): s for s in workbook.sheetnames}
 
-            if target_sheet_obj:
-                header = [cell.value for cell in target_sheet_obj[1]]
-                header_upper = [str(h).strip().upper() for h in header]
-                col_map = {db_col: header_upper.index(excel_col) for excel_col, db_col in config.ABD_COLUMN_MAP.items()
-                           if excel_col in header_upper}
+            if 'base' in clean_sheet_names:
+                target_sheet_obj = workbook[clean_sheet_names['base']]
+            elif 'data' in clean_sheet_names:
+                target_sheet_obj = workbook[clean_sheet_names['data']]
+            else:
+                target_sheet_obj = workbook.worksheets[0]
+                print(
+                    f"  -> WARNING: Could not find 'base' or 'data' sheet. Using first sheet: '{target_sheet_obj.title}'")
 
-                if 'EMPLID' in col_map:
-                    row_iterator = target_sheet_obj.iter_rows(min_row=2, values_only=True)
-                    for row in tqdm(row_iterator, total=target_sheet_obj.max_row - 1, desc=f"  -> Loading rows",
-                                    unit="row"):
-                        record = {db_col: row[excel_idx] for db_col, excel_idx in col_map.items()}
-                        record['EMPLID'] = str(record.get('EMPLID'))
-                        all_records.append(record)
+            header = [cell.value for cell in target_sheet_obj[1]]
+            header_upper = [str(h).strip().upper() for h in header]
+
+            col_map = {}
+
+            # --- MODIFIED: More robust column matching logic ---
+            for excel_key, db_col_name in config.ABD_COLUMN_MAP.items():
+                # Sanitize the key from the config file by removing spaces and underscores
+                sanitized_key = excel_key.replace('_', '').replace(' ', '')
+
+                for idx, actual_header in enumerate(header_upper):
+                    # Sanitize the header from the Excel file in the same way
+                    sanitized_header = actual_header.replace('_', '').replace(' ', '')
+
+                    # Now, compare the sanitized versions
+                    if sanitized_header.startswith(sanitized_key):
+                        if db_col_name not in col_map:
+                            col_map[db_col_name] = idx
+                            break
+            # --- END OF MODIFICATION ---
+
+            if 'EMPLID' not in col_map:
+                print(
+                    f"  -> ERROR: Required column 'EMPLID' not found in sheet '{target_sheet_obj.title}'. Skipping file.")
+                continue
+
+            row_iterator = target_sheet_obj.iter_rows(min_row=2, values_only=True)
+            for row in tqdm(row_iterator, total=target_sheet_obj.max_row - 1, desc=f"  -> Loading rows", unit="row"):
+                record = {db_col: row[excel_idx] if excel_idx < len(row) else None for db_col, excel_idx in
+                          col_map.items()}
+                record['EMPLID'] = str(record.get('EMPLID'))
+                all_records.append(record)
+
         except Exception as e:
             print(f"\nWarning: Could not process file {file_name}. Error: {e}")
 
@@ -138,21 +167,22 @@ def import_abd_data(connection, abd_folder_path):
         print("No valid ABD data found to process.")
         return
 
-    # --- STAGE 2: Processing records in memory ---
-    print("\n\n--- Stage 2 of 3: Processing and removing duplicates ---")
+    print("\n\n--- Processing and removing duplicates ---")
     combined_df = pd.DataFrame(all_records)
     combined_df.dropna(subset=['EMPLID'], inplace=True)
     final_df = combined_df.drop_duplicates(subset=['EMPLID'], keep='last')
     print(f"Processing complete. Found {len(final_df)} unique records to load.")
 
-    # --- STAGE 3: Loading final data into the database ---
-    print("\n--- Stage 3 of 3: Loading unique records into the database ---")
+    print("\n--- Loading unique records into the database ---")
     cursor.execute(f"TRUNCATE TABLE {config.ABD_TABLE_NAME}")
 
+    cols = final_df.columns.tolist()
+    col_str = ", ".join([f"`{c}`" for c in cols])
+    placeholders = ", ".join(["%s"] * len(cols))
+    sql = f"INSERT INTO {config.ABD_TABLE_NAME} ({col_str}) VALUES ({placeholders})"
+
     for _, row in tqdm(final_df.iterrows(), total=len(final_df), desc="Loading final ABD data"):
-        sql = "INSERT INTO {} (EMPLID, `Function`, Designation, BAND) VALUES (%s, %s, %s, %s)".format(
-            config.ABD_TABLE_NAME)
-        values = (row.get('EMPLID'), row.get('Function'), row.get('Designation'), row.get('BAND'))
+        values = tuple(row.get(c) for c in cols)
         cursor.execute(sql, values)
 
     connection.commit()
@@ -221,10 +251,8 @@ def import_salary_data(connection, excel_path, fiscal_year):
         for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Loading salary {sheet_name: <15}", leave=False):
             month_date = pd.to_datetime(row['MONTH'])
             end_of_month_date = (month_date + pd.offsets.MonthEnd(0)).date()
-            sql = f"INSERT INTO {config.SALARY_TABLE} (fiscal_year, EMPLID, MONTH, GROSS_PAY, DESIGNATION, BAND, `FUNCTION`) VALUES (%s, %s, %s, %s, %s, %s, %s)"
-            values = (fiscal_year, str(row.get('EMPLID', '')).strip(), end_of_month_date, row.get('GROSS PAY'),
-                      str(row.get('DESIGNATION', '')).strip(), str(row.get('BAND', '')).strip(),
-                      str(row.get('FUNCTION', '')).strip())
+            sql = f"INSERT INTO {config.SALARY_TABLE} (fiscal_year, EMPLID, MONTH, GROSS_PAY) VALUES (%s, %s, %s, %s)"
+            values = (fiscal_year, str(row.get('EMPLID', '')).strip(), end_of_month_date, row.get('GROSS PAY'))
             cursor.execute(sql, values)
 
     connection.commit()
@@ -237,18 +265,21 @@ def consolidate_data(connection, log_file, fiscal_year):
 
     join_query = f"""
         INSERT INTO {config.CONSOLIDATION_TABLE} (
-            fiscal_year, EMPLID, Month, GROSS_PAY, DESIGNATION, BAND, `FUNCTION`, 
+            fiscal_year, EMPLID, Month, GROSS_PAY, 
+            DESIGNATION, BAND, `FUNCTION`, 
             CURRENT_WORK_LOCATION, PROJECT_ID, PROJECT_DESCRIPTION, PROJECT_TYPE, 
             CONTRACT_TYPE, CUST_NAME, PGM_MANAGER_NAME, PGM_MANAGER_EMAIL
         )
         SELECT
-            r.fiscal_year, r.EMPLID, r.Month, s.GROSS_PAY, s.DESIGNATION, s.BAND, s.`FUNCTION`,
+            r.fiscal_year, r.EMPLID, r.Month, s.GROSS_PAY,
+            abd.Designation, abd.BAND, abd.Function,
             r.CURRENT_WORK_LOCATION, r.PROJECT_ID, r.PROJECT_DESCRIPTION,
             r.PROJECT_TYPE, r.CONTRACT_TYPE, r.CUST_NAME,
             pmr.PGM_MANAGER_NAME, pmr.PGM_MANAGER_EMAIL
         FROM {config.REGIONAL_TABLE} r
         LEFT JOIN {config.SALARY_TABLE} s ON r.EMPLID = s.EMPLID AND r.Month = s.Month
         LEFT JOIN {config.PMR_DB_NAME}.{config.PMR_TABLE} pmr ON r.PROJECT_ID = pmr.PROJECT_ID
+        LEFT JOIN {config.ABD_DB_NAME}.{config.ABD_TABLE_NAME} abd ON r.EMPLID = abd.EMPLID
         WHERE r.fiscal_year = %s
     """
     print(f"Consolidating data for {fiscal_year} via SQL join...")
