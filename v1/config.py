@@ -9,7 +9,7 @@ ABD_DB_NAME = "global_associate_base_data"
 
 # --- TABLE NAMES ---
 REGIONAL_TABLE = "employee_regional_details"
-SALARY_TABLE = "france_salary_data"
+SALARY_TABLE = "salary_data"
 CONSOLIDATION_TABLE = "consolidation"
 PMR_TABLE = "pmr_project_managers"
 ABD_TABLE_NAME = "associate_base_data"
