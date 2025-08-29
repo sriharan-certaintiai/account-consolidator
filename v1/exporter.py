@@ -23,36 +23,56 @@ def generate_final_report(connection, output_excel_path):
                 fiscal_year, 
                 PROJECT_ID 
             FROM {config.CONSOLIDATION_TABLE} 
-            WHERE PGM_MANAGER_NAME IS NULL 
+            WHERE PGM_MANAGER_EMAIL IS NULL 
               AND PROJECT_ID IS NOT NULL 
               AND PROJECT_ID != '' 
             ORDER BY fiscal_year, PROJECT_ID
         """
         df_anomalies = pd.read_sql(anomalies_query, connection)
-        print(f"  - Found {len(df_anomalies)} unique project IDs with missing manager details.")
+        print(f"  - Found {len(df_anomalies)} unique project IDs with missing manager emails.")
 
-        # --- Write to Excel ---
+        # --- Prepare the optional ER_NIC_SUM DataFrame ---
+        has_er_nic_sum_data = 'ER_NIC_SUM' in df_consolidation.columns and df_consolidation['ER_NIC_SUM'].notna().any()
+
+        df_er_nic = None
+        if has_er_nic_sum_data:
+            df_er_nic = df_consolidation[['fiscal_year', 'Month', 'EMPLID', 'GROSS_PAY', 'ER_NIC_SUM']].copy()
+            df_er_nic.dropna(subset=['ER_NIC_SUM'], inplace=True)
+            print(f"  - Found {len(df_er_nic)} rows with ER_NIC_SUM data for the new sheet.")
+
+        # --- NEW: Create a version of the main DataFrame for export without the ER_NIC_SUM column ---
+        df_consolidation_export = df_consolidation.copy()
+        if 'ER_NIC_SUM' in df_consolidation_export.columns:
+            df_consolidation_export = df_consolidation_export.drop(columns=['ER_NIC_SUM'])
+
+        # --- Write to Excel with formatting ---
         with pd.ExcelWriter(output_excel_path, engine='xlsxwriter') as writer:
-            df_consolidation.to_excel(writer, sheet_name='Consolidated_Data', index=False)
+            # Write the main sheets, using the modified DataFrame for consolidation
+            df_consolidation_export.to_excel(writer, sheet_name='Consolidated_Data', index=False)
             df_anomalies.to_excel(writer, sheet_name='Anomalies_Missing_PMR', index=False)
 
-            # --- CORRECTION START ---
-            # Correctly auto-fit column widths for both sheets
+            # Conditionally write the ER_NIC_SUM sheet
+            if has_er_nic_sum_data and not df_er_nic.empty:
+                df_er_nic.to_excel(writer, sheet_name='ER_NIC_SUM_Details', index=False)
 
-            # Helper function to calculate max width
+            # Helper function to calculate max width for columns
             def get_col_widths(dataframe):
                 return [max([len(str(s)) for s in dataframe[col].values] + [len(col)]) + 2 for col in dataframe.columns]
 
-            # Apply formatting to the 'Consolidated_Data' sheet
+            # Format the main sheets
             worksheet_consolidation = writer.sheets['Consolidated_Data']
-            for i, width in enumerate(get_col_widths(df_consolidation)):
+            for i, width in enumerate(get_col_widths(df_consolidation_export)):
                 worksheet_consolidation.set_column(i, i, width)
 
-            # Apply formatting to the 'Anomalies_Missing_PMR' sheet
             worksheet_anomalies = writer.sheets['Anomalies_Missing_PMR']
             for i, width in enumerate(get_col_widths(df_anomalies)):
                 worksheet_anomalies.set_column(i, i, width)
-            # --- CORRECTION END ---
+
+            # Conditionally format the new sheet
+            if has_er_nic_sum_data and not df_er_nic.empty:
+                worksheet_er_nic = writer.sheets['ER_NIC_SUM_Details']
+                for i, width in enumerate(get_col_widths(df_er_nic)):
+                    worksheet_er_nic.set_column(i, i, width)
 
         print(f"\n✅ Final report successfully saved to:\n{output_excel_path}")
 

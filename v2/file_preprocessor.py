@@ -4,7 +4,6 @@ import tkinter as tk
 from tkinter import filedialog
 import os
 
-
 def reshape_payroll_data(file_path, fiscal_year_start):
     """
     Reshapes payroll data from a wide format to a long format.
@@ -64,11 +63,12 @@ def reshape_payroll_data(file_path, fiscal_year_start):
         # Reset the index to turn the stacked levels (EMPLID, Month) back into columns
         df_stacked.reset_index(inplace=True)
 
+        # --- MODIFIED SECTION ---
         # Rename the columns as requested by the user
         df_stacked.rename(columns={
             'level_1': 'Month',
             'Sum of Total pay': 'gross pay',
-            'Sum of ER NIC': 'Sum of ER NIC'
+            'Sum of ER NIC': 'ER_NIC_SUM' # Changed this line
         }, inplace=True)
 
         # Clean up the data: remove any rows that are totals (non-numeric EMPLID)
@@ -97,7 +97,8 @@ def reshape_payroll_data(file_path, fiscal_year_start):
         df_sorted = df_stacked.sort_values(by=['Month', 'EMPLID'])
 
         # Select, reorder the final columns, and drop rows where there is no pay data
-        final_df = df_sorted[['EMPLID', 'Month', 'gross pay', 'Sum of ER NIC']].dropna(subset=['gross pay'])
+        final_df = df_sorted[['EMPLID', 'Month', 'gross pay', 'ER_NIC_SUM']].dropna(subset=['gross pay']) # Changed this line
+        # --- END MODIFIED SECTION ---
 
         return final_df
 
@@ -128,7 +129,6 @@ def main():
         print("No folder selected. Exiting.")
         return
 
-    # --- NEW CHANGE ---
     # Extract the folder name to use as the fiscal year
     try:
         # os.path.basename gets the last part of the path (the folder name)
@@ -139,7 +139,6 @@ def main():
         print(f"Error: The selected folder name '{folder_name}' is not a valid year.")
         print("Please select a folder named with a four-digit year (e.g., '2024').")
         return
-    # --- END CHANGE ---
 
     # Define the input and output filenames
     input_filename = "raw_salary.xlsx"

@@ -28,7 +28,7 @@ def main():
     root_conn = db_operations.create_connection(config.DB_HOST, config.DB_USER, config.DB_PASSWORD)
     if not root_conn: return
 
-    # --- NEW: Handle global Associate Base Data (ABD) ---
+    # Handle global Associate Base Data (ABD)
     abd_folder_path = os.path.join(folder_selected, config.ABD_FOLDER_NAME)
     if os.path.exists(abd_folder_path):
         print("\n--- Processing Global Associate Base Data ---")
@@ -41,7 +41,7 @@ def main():
             abd_conn.close()
             print(f"Connection to global ABD database '{config.ABD_DB_NAME}' closed.")
 
-    # --- Handle global PMR database ---
+    # Handle global PMR database
     print("\n--- Processing Global PMR Data ---")
     db_operations.create_database(root_conn, config.PMR_DB_NAME)
     pmr_conn = db_operations.create_connection(config.DB_HOST, config.DB_USER, config.DB_PASSWORD, config.PMR_DB_NAME)
@@ -58,7 +58,7 @@ def main():
     pmr_conn.close()
     print(f"Connection to global PMR database '{config.PMR_DB_NAME}' closed.")
 
-    # --- Connect to the account-specific database for processing ---
+    # Connect to the account-specific database for processing
     print("\n--- Processing Account Specific Data ---")
     db_operations.create_database(root_conn, db_name)
     conn = db_operations.create_connection(config.DB_HOST, config.DB_USER, config.DB_PASSWORD, db_name)
@@ -87,6 +87,9 @@ def main():
             db_operations.import_salary_data(conn, salary_file, fiscal_year)
 
         db_operations.consolidate_data(conn, log_file, fiscal_year)
+
+        # --- ADDED: Call the new function to backfill emails ---
+        db_operations.fill_missing_emails(conn, db_name, fiscal_year)
 
     if year_folders:
         output_excel_path = os.path.join(folder_selected, f"{db_name}_final_report.xlsx")
