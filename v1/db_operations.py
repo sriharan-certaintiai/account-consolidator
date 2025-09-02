@@ -86,35 +86,68 @@ def create_account_tables(connection):
     print("All account-specific tables are ready.")
 
 
+# ▼▼▼ THIS FUNCTION HAS BEEN UPDATED ▼▼▼
 def create_abd_table(connection):
+    """
+    Creates the associate_base_data table with an auto-incrementing ID
+    to allow for multiple records per employee.
+    """
     cursor = connection.cursor()
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS {config.ABD_TABLE_NAME} (
-            EMPLID VARCHAR(255) PRIMARY KEY,
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            EMPLID VARCHAR(255),
             `Function` VARCHAR(255),
             Designation VARCHAR(255),
             BAND VARCHAR(255),
-            PROGRAM_MANAGER_NAME VARCHAR(255)
+            PROGRAM_MANAGER_NAME VARCHAR(255),
+            CURRENT_LOCATION_DESCRIPTION VARCHAR(255),
+            PROJECT_ID VARCHAR(255),
+            PROJECT_DESCRIPTION TEXT
         );
     """)
     print(f"Table '{config.ABD_TABLE_NAME}' is ready in the global ABD database.")
 
 
-def import_abd_data(connection, abd_folder_path):
-    cursor = connection.cursor()
-    all_records = []
-    abd_files = [f for f in os.listdir(abd_folder_path) if f.endswith(('.xlsx', '.xls'))]
-    total_files = len(abd_files)
-    print(f"Found {total_files} files in the ABD folder.")
+# ▲▲▲ END OF UPDATED SECTION ▲▲▲
 
-    for i, file_name in enumerate(abd_files, 1):
-        print(f"\n[{i}/{total_files}] Processing file: {file_name}")
+
+# ▼▼▼ THIS FUNCTION HAS BEEN COMPLETELY REWRITTEN ▼▼▼
+def import_abd_data(connection, abd_folder_path):
+    """
+    Finds all ABD Excel files, clears the ABD table, and loads all rows
+    from each file's 'base' or 'data' sheet directly into the database.
+    """
+    cursor = connection.cursor()
+
+    # Clear the table once before loading any new data
+    print("Clearing the existing Associate Base Data table...")
+    cursor.execute(f"TRUNCATE TABLE {config.ABD_TABLE_NAME}")
+    print("Table cleared.")
+
+    # Regex to find files like 'ABD_Mar-24.xlsx'
+    abd_file_pattern = re.compile(r"ABD_[A-Za-z]{3}-\d{2}\.xlsx?$")
+    abd_files = [f for f in os.listdir(abd_folder_path) if abd_file_pattern.match(f)]
+    total_files = len(abd_files)
+
+    if not abd_files:
+        print("No ABD files found matching the pattern 'ABD_{mmm}-{yy}.xlsx'.")
+        return
+
+    print(f"Found {total_files} ABD file(s) to process.")
+
+    # Process each file individually
+    for i, file_name in enumerate(sorted(abd_files), 1):
+        print(f"\n--- [{i}/{total_files}] Processing file: {file_name} ---")
         file_path = os.path.join(abd_folder_path, file_name)
+
         try:
             workbook = openpyxl.load_workbook(file_path, read_only=True)
             if not workbook.sheetnames:
                 print(f"  -> ERROR: File '{file_name}' contains no sheets. Skipping.")
                 continue
+
+            # Find the target sheet ('base', 'data', or fallback to first)
             target_sheet_obj = None
             clean_sheet_names = {s.strip().lower(): s for s in workbook.sheetnames}
             if 'base' in clean_sheet_names:
@@ -128,6 +161,8 @@ def import_abd_data(connection, abd_folder_path):
 
             header = [cell.value for cell in target_sheet_obj[1]]
             header_upper = [str(h).strip().upper() for h in header]
+
+            # Map Excel columns to database columns based on config
             col_map = {}
             for excel_key, db_col_name in config.ABD_COLUMN_MAP.items():
                 sanitized_key = excel_key.replace('_', '').replace(' ', '')
@@ -143,35 +178,37 @@ def import_abd_data(connection, abd_folder_path):
                     f"  -> ERROR: Required column 'EMPLID' not found in sheet '{target_sheet_obj.title}'. Skipping file.")
                 continue
 
+            # Prepare SQL statement
+            db_cols = list(col_map.keys())
+            col_str = ", ".join([f"`{c}`" for c in db_cols])
+            placeholders = ", ".join(["%s"] * len(db_cols))
+            sql = f"INSERT INTO {config.ABD_TABLE_NAME} ({col_str}) VALUES ({placeholders})"
+
+            # Iterate and insert rows
+            rows_to_insert = []
             row_iterator = target_sheet_obj.iter_rows(min_row=2, values_only=True)
-            for row in tqdm(row_iterator, total=target_sheet_obj.max_row - 1, desc=f"  -> Loading rows", unit="row"):
-                record = {db_col: row[excel_idx] if excel_idx < len(row) else None for db_col, excel_idx in
-                          col_map.items()}
-                record['EMPLID'] = str(record.get('EMPLID'))
-                all_records.append(record)
+            for row in row_iterator:
+                record = tuple(
+                    row[excel_idx] if excel_idx < len(row) else None for db_col, excel_idx in col_map.items())
+                rows_to_insert.append(record)
+
+            if rows_to_insert:
+                with tqdm(total=len(rows_to_insert), desc="    -> Inserting rows", unit="row") as pbar:
+                    for record in rows_to_insert:
+                        cursor.execute(sql, record)
+                        pbar.update(1)
+                connection.commit()
+                print(f"  -> Successfully loaded {len(rows_to_insert)} records from {file_name}.")
+            else:
+                print("  -> No data rows found in this sheet.")
+
         except Exception as e:
-            print(f"\nWarning: Could not process file {file_name}. Error: {e}")
+            print(f"\n  -> ERROR: Could not process file {file_name}. Reason: {e}")
 
-    if not all_records:
-        print("No valid ABD data found to process.")
-        return
+    print(f"\n✅ All {total_files} ABD files have been processed.")
 
-    print("\n\n--- Processing and removing duplicates ---")
-    combined_df = pd.DataFrame(all_records)
-    combined_df.dropna(subset=['EMPLID'], inplace=True)
-    final_df = combined_df.drop_duplicates(subset=['EMPLID'], keep='last')
-    print(f"Processing complete. Found {len(final_df)} unique records to load.")
-    print("\n--- Loading unique records into the database ---")
-    cursor.execute(f"TRUNCATE TABLE {config.ABD_TABLE_NAME}")
-    cols = final_df.columns.tolist()
-    col_str = ", ".join([f"`{c}`" for c in cols])
-    placeholders = ", ".join(["%s"] * len(cols))
-    sql = f"INSERT INTO {config.ABD_TABLE_NAME} ({col_str}) VALUES ({placeholders})"
-    for _, row in tqdm(final_df.iterrows(), total=len(final_df), desc="Loading final ABD data"):
-        values = tuple(row.get(c) for c in cols)
-        cursor.execute(sql, values)
-    connection.commit()
-    print(f"✅ {len(final_df)} unique associate records loaded into global ABD database.")
+
+# ▲▲▲ END OF REWRITTEN SECTION ▲▲▲
 
 
 def import_pmr_data(connection, pmr_files):
@@ -254,37 +291,104 @@ def import_salary_data(connection, excel_path, fiscal_year):
     connection.commit()
     print(f"Salary data for {fiscal_year} loaded into {config.SALARY_TABLE}")
 
-
-# --- MODIFIED: Includes ER_NIC_SUM in the final consolidation ---
 def consolidate_data(connection, log_file, fiscal_year):
+    """
+    Consolidates regional, salary, and ABD data. It allocates monthly pay across
+    projects based on hours worked to prevent duplication.
+    """
     cursor = connection.cursor()
+    print(f"Consolidating data for {fiscal_year}...")
     cursor.execute(f"DELETE FROM {config.CONSOLIDATION_TABLE} WHERE fiscal_year = %s", (fiscal_year,))
 
-    join_query = f"""
+    # Step 1: Create a temporary table to hold allocated salary data
+    cursor.execute(f"""
+        CREATE TEMPORARY TABLE temp_allocated_salary (
+            fiscal_year VARCHAR(10),
+            EMPLID VARCHAR(255),
+            Month DATE,
+            GROSS_PAY DECIMAL(20, 2),
+            ER_NIC_SUM DECIMAL(20, 2),
+            PROJECT_ID VARCHAR(255)
+        );
+    """)
+
+    # Step 2: Insert allocated salaries into the temporary table
+    query_allocated = f"""
+        INSERT INTO temp_allocated_salary
+        SELECT
+            s.fiscal_year, s.EMPLID, s.Month,
+            s.GROSS_PAY * (r.TOTAL_HOURS / emh.total_hours),
+            s.ER_NIC_SUM * (r.TOTAL_HOURS / emh.total_hours),
+            r.PROJECT_ID
+        FROM
+            {config.SALARY_TABLE} s
+        JOIN
+            (SELECT EMPLID, Month, fiscal_year, SUM(TOTAL_HOURS) as total_hours
+             FROM {config.REGIONAL_TABLE} WHERE fiscal_year = %s AND TOTAL_HOURS > 0
+             GROUP BY EMPLID, Month, fiscal_year) emh
+             ON s.EMPLID = emh.EMPLID AND s.Month = emh.Month AND s.fiscal_year = emh.fiscal_year
+        JOIN
+            {config.REGIONAL_TABLE} r ON emh.EMPLID = r.EMPLID AND emh.Month = r.Month AND emh.fiscal_year = r.fiscal_year
+        WHERE
+            s.fiscal_year = %s;
+    """
+    cursor.execute(query_allocated, (fiscal_year, fiscal_year))
+    print(f"  - Calculated allocated pay for employees with project hours.")
+
+    # Step 3: Insert unallocated salaries into the temporary table
+    query_unallocated = f"""
+        INSERT INTO temp_allocated_salary
+        SELECT
+            s.fiscal_year, s.EMPLID, s.Month, s.GROSS_PAY, s.ER_NIC_SUM, NULL
+        FROM
+            {config.SALARY_TABLE} s
+        LEFT JOIN
+            (SELECT DISTINCT EMPLID, Month, fiscal_year FROM {config.REGIONAL_TABLE}
+             WHERE fiscal_year = %s AND TOTAL_HOURS > 0) r_valid
+             ON s.EMPLID = r_valid.EMPLID AND s.Month = r_valid.Month AND s.fiscal_year = r_valid.fiscal_year
+        WHERE
+            s.fiscal_year = %s AND r_valid.EMPLID IS NULL;
+    """
+    cursor.execute(query_unallocated, (fiscal_year, fiscal_year))
+    print(f"  - Added pay for salary-only employees.")
+
+    # Step 4: Insert the final consolidated data into the main table
+    final_insert_query = f"""
         INSERT INTO {config.CONSOLIDATION_TABLE} (
             fiscal_year, EMPLID, Month, GROSS_PAY, ER_NIC_SUM,
-            DESIGNATION, BAND, `FUNCTION`, 
-            CURRENT_WORK_LOCATION, PROJECT_ID, PROJECT_DESCRIPTION, PROJECT_TYPE, 
+            DESIGNATION, BAND, `FUNCTION`,
+            CURRENT_WORK_LOCATION, PROJECT_ID, PROJECT_DESCRIPTION, PROJECT_TYPE,
             CONTRACT_TYPE, CUST_NAME, PGM_MANAGER_NAME, PGM_MANAGER_EMAIL
         )
         SELECT
-            r.fiscal_year, r.EMPLID, r.Month, s.GROSS_PAY, s.ER_NIC_SUM,
+            t.fiscal_year, t.EMPLID, t.Month, t.GROSS_PAY, t.ER_NIC_SUM,
             abd.Designation, abd.BAND, abd.Function,
             r.CURRENT_WORK_LOCATION, r.PROJECT_ID, r.PROJECT_DESCRIPTION,
             r.PROJECT_TYPE, r.CONTRACT_TYPE, r.CUST_NAME,
-            abd.PROGRAM_MANAGER_NAME, 
+            COALESCE(pmr.PGM_MANAGER_NAME, abd.PROGRAM_MANAGER_NAME),
             pmr.PGM_MANAGER_EMAIL
-        FROM {config.REGIONAL_TABLE} r
-        LEFT JOIN {config.SALARY_TABLE} s ON r.EMPLID = s.EMPLID AND r.Month = s.Month
-        LEFT JOIN {config.ABD_DB_NAME}.{config.ABD_TABLE_NAME} abd ON r.EMPLID = abd.EMPLID
-        LEFT JOIN {config.PMR_DB_NAME}.{config.PMR_TABLE} pmr ON r.PROJECT_ID = pmr.PROJECT_ID
-        WHERE r.fiscal_year = %s
+        FROM
+            temp_allocated_salary t
+        LEFT JOIN
+            {config.REGIONAL_TABLE} r ON t.EMPLID = r.EMPLID AND t.Month = r.Month AND t.fiscal_year = r.fiscal_year AND t.PROJECT_ID = r.PROJECT_ID
+        LEFT JOIN
+            (SELECT * FROM {config.ABD_DB_NAME}.{config.ABD_TABLE_NAME}
+             WHERE (EMPLID, id) IN
+                (SELECT EMPLID, MAX(id) FROM {config.ABD_DB_NAME}.{config.ABD_TABLE_NAME} GROUP BY EMPLID)
+            ) abd ON t.EMPLID = abd.EMPLID
+        LEFT JOIN
+            {config.PMR_DB_NAME}.{config.PMR_TABLE} pmr ON t.PROJECT_ID = pmr.PROJECT_ID;
     """
-    print(f"Consolidating data for {fiscal_year} via SQL join...")
-    cursor.execute(join_query, (fiscal_year,))
-    connection.commit()
-    print(f"Data for {fiscal_year} consolidated.")
+    cursor.execute(final_insert_query)
+    print(f"  - Final consolidation complete.")
 
+    # Step 5: Drop the temporary table
+    cursor.execute("DROP TEMPORARY TABLE temp_allocated_salary;")
+
+    connection.commit()
+    print(f"Data for {fiscal_year} consolidated successfully.")
+
+    # --- The rest of the function (logging missing projects) remains the same ---
     missing_query = f"""
         SELECT DISTINCT r.PROJECT_ID
         FROM {config.REGIONAL_TABLE} r
@@ -300,7 +404,6 @@ def consolidate_data(connection, log_file, fiscal_year):
             log.write("\n".join(sorted(missing_projects)))
     print(f"Missing projects for {fiscal_year} logged in {log_file}.")
 
-
 def fill_missing_emails(connection, db_name, fiscal_year):
     """
     Updates the consolidation table to fill in missing PGM emails by
@@ -309,13 +412,16 @@ def fill_missing_emails(connection, db_name, fiscal_year):
     print(f"Attempting to fill missing PGM emails for {fiscal_year} by name matching...")
     cursor = connection.cursor()
 
+    # ▼▼▼ THIS QUERY HAS BEEN UPDATED ▼▼▼
     # This query joins the consolidation table with the global PMR table
     # on the cleaned manager name (case-insensitive and trimmed)
     update_query = f"""
         UPDATE
             {db_name}.{config.CONSOLIDATION_TABLE} c
         JOIN
-            (SELECT PGM_MANAGER_NAME, PGM_MANAGER_EMAIL 
+            (SELECT 
+                 PGM_MANAGER_NAME, 
+                 MAX(PGM_MANAGER_EMAIL) AS PGM_MANAGER_EMAIL 
              FROM {config.PMR_DB_NAME}.{config.PMR_TABLE}
              WHERE PGM_MANAGER_EMAIL IS NOT NULL AND PGM_MANAGER_NAME IS NOT NULL
              GROUP BY PGM_MANAGER_NAME
@@ -327,6 +433,7 @@ def fill_missing_emails(connection, db_name, fiscal_year):
             c.PGM_MANAGER_EMAIL IS NULL
             AND c.fiscal_year = %s;
     """
+    # ▲▲▲ END OF UPDATED SECTION ▲▲▲
 
     try:
         cursor.execute(update_query, (fiscal_year,))

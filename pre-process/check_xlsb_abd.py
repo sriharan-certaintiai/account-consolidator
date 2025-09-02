@@ -13,7 +13,7 @@ def find_sheet_name(xls_file):
     """
     sheet_names = xls_file.sheet_names
     for name in sheet_names:
-        if name.lower() in ['data', 'base']:
+        if name.lower() in ['data', 'base', 'sheet1']:
             return name
     return None
 
@@ -71,8 +71,8 @@ def process_folder(folder_path):
         'Technical/', 'PROJECT_PRICING_TYPE'
     ]
 
-    # Regex to match filenames like 'MM-YYYY.xlsx'
-    file_pattern = re.compile(r'^\d{2}-\d{4}\.xlsx$', re.IGNORECASE)
+    # Regex to match filenames like 'MM-YYYY.xlsx' or 'MM-YYYY.xlsb'
+    file_pattern = re.compile(r'^\d{2}-\d{4}\.(xlsx|xlsb)$', re.IGNORECASE)
 
     # Filter for files that match the pattern to use with the progress bar
     matching_files = [f for f in os.listdir(folder_path) if file_pattern.match(f)]
@@ -87,12 +87,16 @@ def process_folder(folder_path):
             log(f"\n--- Processing file: {filename} ---")
 
             try:
+                # Determine the correct engine based on file extension
+                engine = 'pyxlsb' if filename.lower().endswith('.xlsb') else 'openpyxl'
+
                 # Load the excel file to check for sheets
-                xls = pd.ExcelFile(file_path)
+                xls = pd.ExcelFile(file_path, engine=engine)
                 sheet_to_read = find_sheet_name(xls)
 
                 if sheet_to_read:
                     log(f"[INFO]    Found sheet: '{sheet_to_read}'")
+                    log(f"[INFO]    Loading data from sheet... (This may take a moment for large files)")
                     # If a valid sheet is found, read it into a dataframe
                     df = pd.read_excel(xls, sheet_name=sheet_to_read)
 

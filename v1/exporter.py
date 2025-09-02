@@ -15,7 +15,12 @@ def generate_final_report(connection, output_excel_path):
         # --- Query 1: Get all consolidated data ---
         consolidation_query = f"SELECT * FROM {config.CONSOLIDATION_TABLE} ORDER BY fiscal_year, Month"
         df_consolidation = pd.read_sql(consolidation_query, connection)
-        print(f"  - Found {len(df_consolidation)} rows for the consolidation sheet.")
+
+        # ▼▼▼ THIS IS THE NEW LINE ▼▼▼
+        # Filter out any rows where there is no salary data
+        df_consolidation.dropna(subset=['GROSS_PAY'], inplace=True)
+
+        print(f"  - Found {len(df_consolidation)} rows with Gross Pay data for the consolidation sheet.")
 
         # --- Query 2: Get anomalies (missing PMR details) ---
         anomalies_query = f"""
